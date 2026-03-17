@@ -82,16 +82,24 @@ class FedresursBankruptcyChecker:
             await page.close()
             await context.close()
 
+
     def read_companies(self):
-        # Чтение вашего файла
+        # Чтение файла
         df = pd.read_excel(self.client_file, header=5)
         df.columns = [str(c).strip() for c in df.columns]
+        
         inn_col = next((c for c in df.columns if 'ИНН' in c), None)
         name_col = next((c for c in df.columns if 'Наименование' in c), None)
         
+        if not inn_col or not name_col:
+            raise ValueError("Колонки ИНН или Наименование не найдены в Excel!")
+            
         companies = df[[name_col, inn_col]].dropna().copy()
         companies.columns = ['name', 'inn']
-        companies['inn'] = companies['inn'].astype(str).str.replace(r'\.0$', '', regex=True).strip()
+        
+        # ИСПРАВЛЕННАЯ СТРОКА: добавили .str перед .strip()
+        companies['inn'] = companies['inn'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        
         return companies
 
     async def run(self):
