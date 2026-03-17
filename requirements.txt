@@ -1,0 +1,7 @@
+playwright
+pandas
+openpyxl
+nest_asyncio
+tqdm
+pytz
+jinja2
