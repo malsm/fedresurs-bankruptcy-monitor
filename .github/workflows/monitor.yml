@@ -1,0 +1,28 @@
+name: Fedresurs Automation
+on:
+  schedule:
+    - cron: '0 6 * * *' # Запуск в 9:00 по МСК (6:00 UTC)
+  workflow_dispatch:   # Позволяет запускать вручную кнопкой
+
+jobs:
+  run-checker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+      - name: Run Scraper
+        run: python script.py
+      - name: Commit & Push Results
+        run: |
+          git config --global user.name "Monitoring Bot"
+          git config --global user.email "bot@github.com"
+          git add index.html history.json reports/*.xlsx
+          git commit -m "Auto-update logs" || echo "No changes to commit"
+          git push
