@@ -13,3 +13,12 @@ venv/
 .idea/
 *.swp
 .DS_Store
+
+# Логи
+logs/*.log
+!logs/.gitkeep
+
+# Кэш
+__pycache__/
+*.pyc
+.env
