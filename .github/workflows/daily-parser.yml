@@ -1,46 +1,38 @@
-name: 🤖 Ежедневный парсинг банкротств
+name: Парсинг банкротств
 
 on:
   schedule:
-    - cron: '0 5 * * *'  # 05:00 UTC = 08:00 МСК (чуть раньше, чтобы успеть)
+    - cron: '0 5 * * *'
   workflow_dispatch:
 
 jobs:
   parse:
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # ⏱️ Увеличено время
+    timeout-minutes: 120
     
     steps:
-      - name: 📥 Клонируем репозиторий
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🐍 Настраиваем Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 📦 Устанавливаем зависимости
+      - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
           playwright install chromium
           playwright install-deps chromium
 
-      - name: 🤖 Запускаем парсинг с обходом блокировок
+      - name: Run parser
         run: python scheduler.py
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 🎭 Дополнительные переменные для обхода
-          STEALTH_MODE: "1"
-          USE_PROXIES: "1"
-          MAX_RETRIES: "4"
 
-      - name: 📤 Сохраняем отчёты в GitHub
+      - name: Commit results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add logs/
-          git commit -m "📊 Отчёт за $(date +'%Y-%m-%d %H:%M MSK')" || echo "Нет изменений"
+          git commit -m "Отчёт $(date +'%Y-%m-%d')" || echo "No changes"
           git push
