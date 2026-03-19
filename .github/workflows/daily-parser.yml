@@ -1,0 +1,41 @@
+name:  Ежедневный парсинг банкротств
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 06:00 UTC = 09:00 МСК
+  workflow_dispatch:  # Ручной запуск
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name:  Клонируем репозиторий
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name:  Настраиваем Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name:  Устанавливаем зависимости
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name:  Запускаем парсинг
+        run: python scheduler.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name:  Сохраняем отчёты в GitHub
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add logs/
+          git commit -m " Отчёт за $(date +'%Y-%m-%d %H:%M')" || echo "Нет изменений"
+          git push
