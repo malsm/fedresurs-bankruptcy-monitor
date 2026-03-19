@@ -2,37 +2,26 @@ name: Парсинг банкротств
 
 on:
   schedule:
-    - cron: '0 5 * * *'
-  workflow_dispatch:
+    - cron: '0 5 * * *'  # 05:00 UTC = 08:00 МСК (для синхронизации)
+  workflow_dispatch:     # Возможность запустить вручную
 
 jobs:
-  parse:
+  sync:  # ← Переименовали job в "sync" (только синхронизация, без парсинга)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30  # ← Уменьшили время (парсинга нет, только коммит)
     
     steps:
-      - name: Checkout
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          fetch-depth: 0  # ← Важно для git push
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          playwright install chromium
-          playwright install-deps chromium
-
-      - name: Run parser
-        run: python scheduler.py
-
-      - name: Commit results
+      - name: 🔄 Синхронизируем отчёты из ПК
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add logs/
-          git commit -m "Отчёт $(date +'%Y-%m-%d')" || echo "No changes"
+          git commit -m "🔄 Sync от ПК $(date +'%Y-%m-%d %H:%M MSK')" || echo "No changes"
           git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
