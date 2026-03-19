@@ -316,11 +316,15 @@ class FedresursBankruptcyChecker:
         return None
 
     async def check_bankruptcy(self, inn: str) -> Tuple[str, str]:
-        """Проверка компании с повторными попытками при ошибках"""
-        max_retries = 2
+        """
+        Проверка компании на банкротство с повторными попытками при ошибках
+        Возвращает: (статус_банкротства, публикации_текстом)
+        """
+        max_retries = 2  # Количество повторных попыток при ошибке
         
         for attempt in range(max_retries + 1):
             try:
+                # === ШАГ 1: Поиск ID компании ===
                 company_id = await self.find_company_id(inn)
                 if not company_id:
                     return "Компания не найдена", ""
@@ -328,11 +332,13 @@ class FedresursBankruptcyChecker:
                 main_url = f"https://fedresurs.ru/companies/{company_id}"
                 pub_url = f"https://fedresurs.ru/companies/{company_id}/publications"
 
+                # === ШАГ 2: Загрузка и парсинг главной страницы ===
                 async with async_playwright() as p:
                     browser = await p.chromium.launch(
                         headless=self.headless,
                         args=['--no-sandbox', '--disable-setuid-sandbox']
                     )
+                    
                     page = await browser.new_page()
                     await page.goto(main_url, wait_until='domcontentloaded', timeout=90000)
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -344,49 +350,71 @@ class FedresursBankruptcyChecker:
                         await browser.close()
                         return "Ошибка загрузки страницы", ""
 
+                    # === ШАГ 3: Извлечение данных о банкротстве ===
                     bankruptcy_status, has_data, _ = self._extract_bankruptcy_data(main_html)
+
+                    # === ШАГ 4: Извлечение данных о торгах ===
                     trades = await self._extract_trades_data(main_url, browser)
+
+                    # === ШАГ 5: Извлечение публикаций ===
                     publications = await self._extract_publications_from_page(pub_url, browser)
                     await browser.close()
 
-                    pub_lines = [f"- {p['number']} от {p['date']} {p['title']}" for p in publications]
-                    trade_lines = []
-                    for t in trades:
-                        line = f"- {t.get('number', '')}"
-                        if 'start_date' in t and 'end_date' in t:
-                            line += f" Дата торгов {t['start_date']} — {t['end_date']}"
-                        if 'organizer' in t:
-                            line += f" {t['organizer']}"
-                        trade_lines.append(line)
+                # === ШАГ 6: Формирование результата ===
+                pub_lines = [f"- {p['number']} от {p['date']} {p['title']}" for p in publications]
+                
+                trade_lines = []
+                for t in trades:
+                    line = f"- {t.get('number', '')}"
+                    if 'start_date' in t and 'end_date' in t:
+                        line += f" Дата торгов {t['start_date']} — {t['end_date']}"
+                    if 'organizer' in t:
+                        line += f" {t['organizer']}"
+                    trade_lines.append(line)
 
-                    if (publications or trades) and not has_data:
-                        parts = ["Сведения о банкротстве:"]
-                        if trades: parts.extend(["Торги\nПродажа имущества при банкротстве"] + trade_lines)
-                        if publications: parts.extend(["Публикации:"] + pub_lines)
-                        return "\n".join(parts), ""
-
-                    if not has_data and not publications and not trades:
-                        return "Нет данных", ""
-
-                    status_parts = []
-                    if has_data: status_parts.append(bankruptcy_status)
+                # Если есть только публикации/торги (но не банкротство)
+                if (publications or trades) and not has_data:
+                    parts = ["Сведения о банкротстве:"]
                     if trades:
-                        prefix = "\nТорги\nПродажа имущества при банкротстве" if status_parts else "Сведения о банкротстве:\nТорги\nПродажа имущества при банкротстве"
-                        status_parts.append(prefix)
-                        status_parts.extend(trade_lines)
+                        parts.extend(["Торги\nПродажа имущества при банкротстве"] + trade_lines)
+                    if publications:
+                        parts.extend(["Публикации:"] + pub_lines)
+                    return "\n".join(parts), ""
 
-                    final_status = "\n".join(status_parts) if status_parts else "Нет данных"
-                    pub_text = "\n".join(pub_lines) if pub_lines else ""
-                    return final_status, pub_text
+                # Если совсем нет данных
+                if not has_data and not publications and not trades:
+                    return "Нет данных", ""
 
+                # Собираем финальный статус
+                status_parts = []
+                if has_data:
+                    status_parts.append(bankruptcy_status)
+                if trades:
+                    prefix = "\nТорги\nПродажа имущества при банкротстве" if status_parts else "Сведения о банкротстве:\nТорги\nПродажа имущества при банкротстве"
+                    status_parts.append(prefix)
+                    status_parts.extend(trade_lines)
+
+                final_status = "\n".join(status_parts) if status_parts else "Нет данных"
+                pub_text = "\n".join(pub_lines) if pub_lines else ""
+                
+                return final_status, pub_text
+
+            # === ОБРАБОТКА ОШИБОК С ПОВТОРНЫМИ ПОПЫТКАМИ ===
             except Exception as e:
-                if attempt < max_retries:
-                    wait_time = (attempt + 1) * 15
-                    logger.warning(f"Попытка {attempt+1}/{max_retries} не удалась для {inn}, ждём {wait_time}с...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"Ошибка {inn} после {max_retries} попыток: {e}")
-                    return f"Ошибка: {str(e)[:100]}", ""
+                error_msg = str(e)
+                
+                # Если это последняя попытка — возвращаем ошибку
+                if attempt >= max_retries:
+                    logger.error(f"❌ {inn}: Ошибка после {max_retries+1} попыток: {error_msg[:150]}")
+                    return f"Ошибка: {error_msg[:100]}", ""
+                
+                # Иначе ждём и пробуем снова
+                wait_time = (attempt + 1) * 15
+                logger.warning(f"⚠️ {inn}: Попытка {attempt+1}/{max_retries+1} не удалась, ждём {wait_time}с... ({error_msg[:80]})")
+                await asyncio.sleep(wait_time)
+                
+                # 🎭 Дополнительная случайная задержка перед повтором
+                await asyncio.sleep(random.uniform(2, 5))
 
     def read_companies(self) -> pd.DataFrame:
         df = pd.read_excel(self.client_file, header=5)
