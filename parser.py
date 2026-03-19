@@ -1,21 +1,26 @@
 """
-Парсер Федресурса - проверяет компании на банкротство
-Минималистичная версия для стабильной работы в GitHub Actions
+Продвинутый парсер Федресурса с максимальным обходом блокировок
+Версия для GitHub Actions
 """
 import asyncio
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright_stealth import stealth_async
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 import nest_asyncio
 import os
 import re
 import random
+import json
 from fake_useragent import UserAgent
 from typing import List, Dict, Tuple, Optional
 import logging
+from dotenv import load_dotenv
 
+load_dotenv()
 nest_asyncio.apply()
 
+os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -33,23 +38,34 @@ class FedresursBankruptcyChecker:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    ]
+
+    VIEWPORTS = [
+        {'width': 1920, 'height': 1080},
+        {'width': 1366, 'height': 768},
+        {'width': 1536, 'height': 864},
+        {'width': 1440, 'height': 900},
     ]
 
     def __init__(self, client_file: str, headless: bool = True, 
-                 delay: int = 12, batch_size: int = 2, batch_delay: int = 120,
-                 max_retries: int = 3):
+                 delay: int = 15, batch_size: int = 1, batch_delay: int = 180,
+                 max_retries: int = 5, use_proxy: bool = False):
         self.client_file = client_file
         self.headless = headless
         self.delay = delay
         self.batch_size = batch_size
         self.batch_delay = batch_delay
         self.max_retries = max_retries
+        self.use_proxy = use_proxy
         self.moscow_tz = timezone(timedelta(hours=3))
         self.today = datetime.now(self.moscow_tz).strftime('%Y-%m-%d')
         self.output_file = f"logs/excel/fedresurs_{self.today}.xlsx"
         self.html_file = f"logs/html/fedresurs_{self.today}.html"
         self.results = []
         self._ua = UserAgent()
+        self._session_cookies = {}
 
         self.key_phrases = [
             "Намерение должника обратиться в суд с заявлением о банкротстве",
@@ -82,6 +98,8 @@ class FedresursBankruptcyChecker:
                 'message': r'(\d{8})\s+от\s+(\d{2}\.\d{2}\.\d{4})'
             }
         }
+
+        logger.info(f"🎭 Парсер инициализирован: delay={delay}s, batch={batch_size}, retries={max_retries}")
 
     def _clean_html(self, text: str) -> str:
         text = re.sub(r'<[^>]+>', '', text)
@@ -199,30 +217,79 @@ class FedresursBankruptcyChecker:
 
         return '\n'.join(formatted_parts), True, messages
 
+    async def _human_behavior(self, page: Page):
+        """Имитация поведения человека"""
+        # Случайная прокрутка
+        scroll_positions = [0.2, 0.5, 0.8, 1.0, 0.0]
+        for pos in scroll_positions:
+            await page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {pos})')
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+        
+        # Случайные движения мыши
+        for _ in range(random.randint(3, 7)):
+            x = random.randint(100, 1200)
+            y = random.randint(100, 800)
+            await page.mouse.move(x, y, steps=random.randint(15, 30))
+            await asyncio.sleep(random.uniform(0.2, 0.8))
+
+    async def _create_stealth_context(self, browser: Browser) -> BrowserContext:
+        """Создание контекста с максимальной маскировкой"""
+        ua = random.choice(self.USER_AGENTS) if random.random() < 0.7 else self._ua.random
+        viewport = random.choice(self.VIEWPORTS)
+        
+        context_args = {
+            'user_agent': ua,
+            'viewport': viewport,
+            'locale': 'ru-RU',
+            'timezone_id': 'Europe/Moscow',
+            'permissions': ['geolocation'],
+            'geolocation': {'latitude': 55.7558, 'longitude': 37.6173},
+            'color_scheme': 'light',
+        }
+        
+        context = await browser.new_context(**context_args)
+        await stealth_async(context)
+        
+        # Добавление случайных cookies
+        await context.add_cookies([{
+            'name': f'session_{random.randint(1000, 9999)}',
+            'value': ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=32)),
+            'domain': '.fedresurs.ru',
+            'path': '/',
+        }])
+        
+        return context
+
     async def find_company_id(self, inn: str) -> Optional[str]:
-        """Поиск ID компании с обходом блокировок"""
+        """Поиск ID компании с максимальным обходом блокировок"""
         url = f"https://fedresurs.ru/entities?searchString={inn.strip()}"
         
         for attempt in range(self.max_retries + 1):
             try:
                 async with async_playwright() as p:
-                    browser_args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-                    browser = await p.chromium.launch(headless=self.headless, args=browser_args)
+                    browser_args = [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--disable-gpu',
+                        '--disable-blink-features=AutomationControlled',
+                    ]
                     
-                    ua = random.choice(self.USER_AGENTS) if random.random() < 0.7 else self._ua.random
-                    context = await browser.new_context(
-                        user_agent=ua,
-                        viewport={'width': random.choice([1920, 1366]), 'height': random.choice([1080, 768])},
-                        locale='ru-RU',
-                        timezone_id='Europe/Moscow'
-                    )
+                    browser = await p.chromium.launch(headless=self.headless, args=browser_args)
+                    context = await self._create_stealth_context(browser)
                     page = await context.new_page()
                     
-                    await asyncio.sleep(random.uniform(3, 8))
-                    await page.goto(url, wait_until='domcontentloaded', timeout=120000)
+                    # Случайная задержка перед запросом
+                    await asyncio.sleep(random.uniform(5, 12))
+                    
+                    # Переход на страницу
+                    await page.goto(url, wait_until='domcontentloaded', timeout=180000)
+                    await asyncio.sleep(random.uniform(3, 6))
+                    
+                    # Имитация человека
+                    await self._human_behavior(page)
                     await asyncio.sleep(random.uniform(2, 4))
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
-                    await asyncio.sleep(random.uniform(1, 2))
                     
                     html = await page.content()
                     await browser.close()
@@ -230,16 +297,19 @@ class FedresursBankruptcyChecker:
                     for pattern in self.config['search']['id_patterns']:
                         match = re.search(pattern, html)
                         if match:
+                            logger.debug(f"✅ ID найден для {inn}")
                             return match.group(1)
-                        
+                            
             except Exception as e:
-                wait = min(60, (attempt + 1) * 20 + random.uniform(5, 15))
-                logger.warning(f"{inn}: Попытка {attempt+1}/{self.max_retries+1} не удалась, ждём {wait:.0f}с")
+                wait = min(120, (attempt + 1) * 30 + random.uniform(10, 30))
+                logger.warning(f"⚠️ {inn}: Попытка {attempt+1}/{self.max_retries+1} не удалась, ждём {wait:.0f}с ({str(e)[:50]})")
                 await asyncio.sleep(wait)
+                
+        logger.error(f"❌ {inn}: Не найден после {self.max_retries+1} попыток")
         return None
 
     async def check_bankruptcy(self, inn: str) -> Tuple[str, str]:
-        """Проверка компании с обходом блокировок"""
+        """Проверка компании с полным набором обходов"""
         for attempt in range(self.max_retries + 1):
             try:
                 company_id = await self.find_company_id(inn)
@@ -250,19 +320,14 @@ class FedresursBankruptcyChecker:
                 pub_url = f"{main_url}/publications"
 
                 async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=self.headless, 
-                        args=['--no-sandbox', '--disable-setuid-sandbox'])
-                    context = await browser.new_context(
-                        user_agent=random.choice(self.USER_AGENTS),
-                        viewport={'width': 1920, 'height': 1080},
-                        locale='ru-RU',
-                        timezone_id='Europe/Moscow'
-                    )
+                    browser_args = ['--no-sandbox', '--disable-setuid-sandbox']
+                    browser = await p.chromium.launch(headless=self.headless, args=browser_args)
+                    context = await self._create_stealth_context(browser)
                     page = await context.new_page()
                     
-                    await page.goto(main_url, wait_until='domcontentloaded', timeout=120000)
-                    await asyncio.sleep(random.uniform(2, 4))
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await page.goto(main_url, wait_until='domcontentloaded', timeout=180000)
+                    await asyncio.sleep(random.uniform(3, 6))
+                    await self._human_behavior(page)
                     main_html = await page.content()
                     await page.close()
 
@@ -310,18 +375,31 @@ class FedresursBankruptcyChecker:
 
             except Exception as e:
                 if attempt >= self.max_retries:
-                    logger.error(f"{inn}: Ошибка после {self.max_retries+1} попыток: {str(e)[:100]}")
+                    logger.error(f"❌ {inn}: Ошибка после {self.max_retries+1} попыток: {str(e)[:100]}")
                     return f"Ошибка: {str(e)[:100]}", ""
-                wait = min(90, (attempt + 1) * 25 + random.uniform(10, 20))
-                logger.warning(f"{inn}: Попытка {attempt+1}/{self.max_retries+1}, ждём {wait:.0f}с")
+                wait = min(150, (attempt + 1) * 40 + random.uniform(15, 35))
+                logger.warning(f"⚠️ {inn}: Попытка {attempt+1}/{self.max_retries+1}, ждём {wait:.0f}с")
                 await asyncio.sleep(wait)
 
     async def _extract_publications_from_page(self, url, browser) -> List[Dict]:
         publications = []
         page = await browser.new_page()
         try:
-            await page.goto(url, wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(2)
+            await page.goto(url, wait_until='networkidle', timeout=90000)
+            await asyncio.sleep(3)
+            
+            # Загрузка всех публикаций
+            for _ in range(20):
+                try:
+                    btn = await page.wait_for_selector('div.more_btn:has-text("Загрузить еще")', timeout=2000)
+                    if btn and await btn.is_visible():
+                        await btn.click()
+                        await asyncio.sleep(random.uniform(1.5, 3))
+                    else:
+                        break
+                except:
+                    break
+            
             cards = await page.query_selector_all('entity-card-publications-search-result-card')
             for card in cards:
                 title_el = await card.query_selector('.fw-light')
@@ -356,7 +434,7 @@ class FedresursBankruptcyChecker:
         trades = []
         page = await browser.new_page()
         try:
-            await page.goto(url, wait_until='networkidle', timeout=60000)
+            await page.goto(url, wait_until='networkidle', timeout=90000)
             await asyncio.sleep(2)
             if not await page.query_selector('div.info-header:has-text("Торги")'):
                 return trades
@@ -434,7 +512,7 @@ tr:hover{{background:#f8f9fa}}
 .badge-warn{{background:#fef5e7;color:#e67e22}}
 .badge-err{{background:#f9ebea;color:#c0392b}}
 </style></head><body>
-<div class="container"><div class="header"><h1>Проверка банкротства</h1><p>{moscow_now}</p></div>
+<div class="container"><div class="header"><h1>🔍 Проверка банкротства</h1><p>{moscow_now}</p></div>
 <table><thead><tr><th>№</th><th>ИНН</th><th>Наименование</th><th>Статус</th><th>Публикации</th></tr></thead><tbody>"""
         
         for idx, row in df.iterrows():
@@ -455,16 +533,18 @@ tr:hover{{background:#f8f9fa}}
         return html
 
     async def run_with_batches(self) -> Tuple[pd.DataFrame, str, str]:
-        logger.info("Запуск парсинга")
+        logger.info("🚀 Запуск продвинутого парсинга")
+        logger.info(f"📊 Настройки: delay={self.delay}s, batch={self.batch_size}, retries={self.max_retries}")
+        
         companies = self.read_companies()
-        logger.info(f"Загружено компаний: {len(companies)}")
+        logger.info(f"📋 Загружено компаний: {len(companies)}")
         
         for i in range(0, len(companies), self.batch_size):
             batch = companies.iloc[i:i+self.batch_size]
-            logger.info(f"Пакет {i//self.batch_size + 1}: компании {i+1}-{min(i+self.batch_size, len(companies))}")
+            logger.info(f"📦 Пакет {i//self.batch_size + 1}: компании {i+1}-{min(i+self.batch_size, len(companies))}")
             
             for _, row in batch.iterrows():
-                logger.info(f"Проверка: {row['inn']} - {row['name']}")
+                logger.info(f"🔍 Проверка: {row['inn']} - {row['name']}")
                 status, pubs = await self.check_bankruptcy(row['inn'])
                 self.results.append({
                     'ИНН': row['inn'],
@@ -476,7 +556,7 @@ tr:hover{{background:#f8f9fa}}
                 await asyncio.sleep(self.delay)
             
             if i + self.batch_size < len(companies):
-                logger.info(f"Пауза {self.batch_delay} сек...")
+                logger.info(f"⏸️ Пауза {self.batch_delay} сек между пакетами...")
                 await asyncio.sleep(self.batch_delay)
         
         df = pd.DataFrame(self.results)
@@ -486,5 +566,5 @@ tr:hover{{background:#f8f9fa}}
         with open(self.html_file, 'w', encoding='utf-8') as f:
             f.write(self.generate_html_table(df))
         
-        logger.info(f"Готово! Excel: {self.output_file}, HTML: {self.html_file}")
+        logger.info(f"✅ Готово! Excel: {self.output_file}, HTML: {self.html_file}")
         return df, self.output_file, self.html_file
