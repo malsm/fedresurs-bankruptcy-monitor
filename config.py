@@ -22,9 +22,9 @@ for d in [LOGS_DIR, EXCEL_DIR, HTML_DIR]:
 PARSER_CONFIG = {
     "client_file": "Клиенты_страхование_ТЕСТ.xlsx",
     "headless": True,
-    "delay": 3,
-    "batch_size": 5,
-    "batch_delay": 30,
+    "delay": 8,              # Было 3 → стало 8 (между компаниями)
+    "batch_size": 3,         # Было 5 → стало 3 (меньше компаний в пакете)
+    "batch_delay": 60,       # Было 30 → стало 60 (пауза между пакетами)
 }
 
 # Настройки дашборда
