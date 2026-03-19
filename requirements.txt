@@ -1,7 +1,8 @@
-playwright
-pandas
-openpyxl
-nest_asyncio
-tqdm
-pytz
-jinja2
+streamlit>=1.30.0
+pandas>=2.0.0
+playwright>=1.40.0
+nest-asyncio>=1.5.0
+tqdm>=4.66.0
+openpyxl>=3.1.0
+python-dateutil>=2.8.0
+aiohttp>=3.9.0
