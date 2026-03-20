@@ -25,14 +25,13 @@ logger = logging.getLogger(__name__)
 
 
 class FedresursBankruptcyChecker:
-    # Простой список пользовательских агентов
     USER_AGENTS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
     ]
 
-    def __init__(self, client_file: str, headless: bool = True, 
-                 delay: int = 10, batch_size: int = 2, batch_delay: int = 90,
+    def __init__(self, client_file: str, headless: bool = False, 
+                 delay: int = 3, batch_size: int = 1, batch_delay: int = 30,
                  max_retries: int = 3):
         self.client_file = client_file
         self.headless = headless
@@ -194,7 +193,6 @@ class FedresursBankruptcyChecker:
         return '\n'.join(formatted_parts), True, messages
 
     async def find_company_id(self, inn: str) -> Optional[str]:
-        """Поиск ID компании"""
         url = f"https://fedresurs.ru/entities?searchString={inn.strip()}"
         
         for attempt in range(self.max_retries + 1):
@@ -203,7 +201,6 @@ class FedresursBankruptcyChecker:
                     browser_args = ['--no-sandbox', '--disable-setuid-sandbox']
                     browser = await p.chromium.launch(headless=self.headless, args=browser_args)
                     
-                    # Простой случайный user-agent
                     ua = random.choice(self.USER_AGENTS)
                     context = await browser.new_context(
                         user_agent=ua,
@@ -213,13 +210,11 @@ class FedresursBankruptcyChecker:
                     )
                     page = await context.new_page()
                     
-                    # Небольшая случайная задержка
                     await asyncio.sleep(random.uniform(2, 5))
                     
                     await page.goto(url, wait_until='domcontentloaded', timeout=90000)
                     await asyncio.sleep(random.uniform(1, 3))
                     
-                    # Простая прокрутка
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
                     await asyncio.sleep(random.uniform(0.5, 1.5))
                     
@@ -238,82 +233,54 @@ class FedresursBankruptcyChecker:
         return None
 
     async def check_bankruptcy(self, inn: str) -> Tuple[str, str]:
-        """Проверка компании"""
-        for attempt in range(self.max_retries + 1):
-            try:
-                company_id = await self.find_company_id(inn)
-                if not company_id:
-                    return "Компания не найдена", ""
+        """Проверка компании — упрощённая версия"""
+        try:
+            company_id = await self.find_company_id(inn)
+            if not company_id:
+                return "Компания не найдена", ""
 
-                main_url = f"https://fedresurs.ru/companies/{company_id}"
-                pub_url = f"{main_url}/publications"
+            main_url = f"https://fedresurs.ru/companies/{company_id}"
+            publications_url = f"{main_url}/publications"
 
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=self.headless, 
-                        args=['--no-sandbox', '--disable-setuid-sandbox'])
-                    context = await browser.new_context(
-                        user_agent=random.choice(self.USER_AGENTS),
-                        viewport={'width': 1920, 'height': 1080},
-                        locale='ru-RU',
-                        timezone_id='Europe/Moscow'
-                    )
-                    page = await context.new_page()
-                    
-                    await page.goto(main_url, wait_until='domcontentloaded', timeout=90000)
-                    await asyncio.sleep(random.uniform(2, 4))
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    main_html = await page.content()
-                    await page.close()
-
-                    if not main_html:
-                        await browser.close()
-                        return "Ошибка загрузки страницы", ""
-
-                    bankruptcy_status, has_data, _ = self._extract_bankruptcy_data(main_html)
-                    trades = await self._extract_trades_data(main_url, browser)
-                    publications = await self._extract_publications_from_page(pub_url, browser)
-                    await browser.close()
-
-                pub_lines = [f"- {p['number']} от {p['date']} {p['title']}" for p in publications]
-                trade_lines = []
-                for t in trades:
-                    line = f"- {t.get('number', '')}"
-                    if 'start_date' in t and 'end_date' in t:
-                        line += f" Дата торгов {t['start_date']} — {t['end_date']}"
-                    if 'organizer' in t:
-                        line += f" {t['organizer']}"
-                    trade_lines.append(line)
-
-                if (publications or trades) and not has_data:
-                    parts = ["Сведения о банкротстве:"]
-                    if trades:
-                        parts.extend(["Торги", "Продажа имущества при банкротстве"] + trade_lines)
-                    if publications:
-                        parts.extend(["Публикации:"] + pub_lines)
-                    return "\n".join(parts), ""
-
-                if not has_data and not publications and not trades:
-                    return "Нет данных", ""
-
-                status_parts = []
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=self.headless)
+                
+                page = await browser.new_page()
+                await page.goto(main_url, wait_until='networkidle', timeout=60000)
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(2)
+                main_html = await page.content()
+                
+                bankruptcy_status, has_data, _ = self._extract_bankruptcy_data(main_html)
+                
+                publications = []
                 if has_data:
-                    status_parts.append(bankruptcy_status)
-                if trades:
-                    prefix = "Торги: Продажа имущества при банкротстве" if status_parts else "Сведения о банкротстве: Торги: Продажа имущества при банкротстве"
-                    status_parts.append(prefix)
-                    status_parts.extend(trade_lines)
+                    pub_page = await browser.new_page()
+                    await pub_page.goto(publications_url, wait_until='networkidle', timeout=60000)
+                    await asyncio.sleep(2)
+                    pub_cards = await pub_page.query_selector_all('entity-card-publications-search-result-card')
+                    for card in pub_cards:
+                        title_el = await card.query_selector('.fw-light')
+                        if title_el:
+                            title = (await title_el.inner_text()).strip()
+                            for phrase in self.key_phrases:
+                                if phrase.lower() in title.lower():
+                                    link_el = await card.query_selector('a.underlined')
+                                    if link_el:
+                                        link_text = (await link_el.inner_text()).strip()
+                                        info = self._extract_message_info(link_text)
+                                        if info['number'] and info['date']:
+                                            publications.append(f"- {info['number']} от {info['date']} {phrase}")
+                                    break
+                    await pub_page.close()
+                
+                await browser.close()
 
-                final_status = "\n".join(status_parts) if status_parts else "Нет данных"
-                pub_text = "\n".join(pub_lines) if pub_lines else ""
-                return final_status, pub_text
+            pub_text = "\n".join(publications) if publications else ""
+            return bankruptcy_status if has_data else "Нет данных", pub_text
 
-            except Exception as e:
-                if attempt >= self.max_retries:
-                    logger.error(f"{inn}: Ошибка после {self.max_retries+1} попыток: {str(e)[:100]}")
-                    return f"Ошибка: {str(e)[:100]}", ""
-                wait = min(90, (attempt + 1) * 20 + random.uniform(10, 15))
-                logger.warning(f"{inn}: Попытка {attempt+1}/{self.max_retries+1}, ждём {wait:.0f}с")
-                await asyncio.sleep(wait)
+        except Exception as e:
+            return f"Ошибка: {str(e)[:100]}", ""
 
     async def _extract_publications_from_page(self, url, browser) -> List[Dict]:
         publications = []
@@ -433,7 +400,7 @@ tr:hover{{background:#f8f9fa}}
 .badge-warn{{background:#fef5e7;color:#e67e22}}
 .badge-err{{background:#f9ebea;color:#c0392b}}
 </style></head><body>
-<div class="container"><div class="header"><h1>🔍 Проверка банкротства</h1><p>{moscow_now}</p></div>
+<div class="container"><div class="header"><h1>Проверка банкротства</h1><p>{moscow_now}</p></div>
 <table><thead><tr><th>№</th><th>ИНН</th><th>Наименование</th><th>Статус</th><th>Публикации</th></tr></thead><tbody>"""
         
         for idx, row in df.iterrows():
@@ -454,16 +421,16 @@ tr:hover{{background:#f8f9fa}}
         return html
 
     async def run_with_batches(self) -> Tuple[pd.DataFrame, str, str]:
-        logger.info("🚀 Запуск парсинга")
+        logger.info("Запуск парсинга")
         companies = self.read_companies()
-        logger.info(f"📋 Загружено компаний: {len(companies)}")
+        logger.info(f"Загружено компаний: {len(companies)}")
         
         for i in range(0, len(companies), self.batch_size):
             batch = companies.iloc[i:i+self.batch_size]
-            logger.info(f"📦 Пакет {i//self.batch_size + 1}: компании {i+1}-{min(i+self.batch_size, len(companies))}")
+            logger.info(f"Пакет {i//self.batch_size + 1}: компании {i+1}-{min(i+self.batch_size, len(companies))}")
             
             for _, row in batch.iterrows():
-                logger.info(f"🔍 Проверка: {row['inn']} - {row['name']}")
+                logger.info(f"Проверка: {row['inn']} - {row['name']}")
                 status, pubs = await self.check_bankruptcy(row['inn'])
                 self.results.append({
                     'ИНН': row['inn'],
@@ -475,7 +442,7 @@ tr:hover{{background:#f8f9fa}}
                 await asyncio.sleep(self.delay)
             
             if i + self.batch_size < len(companies):
-                logger.info(f"⏸️ Пауза {self.batch_delay} сек...")
+                logger.info(f"Пауза {self.batch_delay} сек...")
                 await asyncio.sleep(self.batch_delay)
         
         df = pd.DataFrame(self.results)
@@ -485,5 +452,5 @@ tr:hover{{background:#f8f9fa}}
         with open(self.html_file, 'w', encoding='utf-8') as f:
             f.write(self.generate_html_table(df))
         
-        logger.info(f"✅ Готово! Excel: {self.output_file}, HTML: {self.html_file}")
+        logger.info(f"Готово! Excel: {self.output_file}, HTML: {self.html_file}")
         return df, self.output_file, self.html_file

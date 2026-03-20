@@ -28,7 +28,7 @@ def push_to_github():
             timestamp = datetime.now(MOSCOW_TZ).strftime('%Y-%m-%d %H:%M MSK')
             subprocess.run(['git', 'config', 'user.email', 'action@github.com'], check=True, capture_output=True)
             subprocess.run(['git', 'config', 'user.name', 'GitHub Action'], check=True, capture_output=True)
-            subprocess.run(['git', 'commit', '-m', f'📊 Отчёт {timestamp}'], check=True, capture_output=True)
+            subprocess.run(['git', 'commit', '-m', f' Отчёт {timestamp}'], check=True, capture_output=True)
             subprocess.run(['git', 'push'], check=True, capture_output=True)
             logger.info(" Файлы отправлены в GitHub")
         else:
@@ -43,8 +43,8 @@ async def run_daily_parsing():
     try:
         checker = FedresursBankruptcyChecker(
             client_file="Клиенты_страхование_ТЕСТ.xlsx",
-            headless=True,
-            delay=10,
+            headless=False,
+            delay=3,
             batch_size=2,
             batch_delay=90,
             max_retries=3
