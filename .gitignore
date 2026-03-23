@@ -1,24 +1,14 @@
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-.venv/
+*.pyc
 *.log
-!logs/.gitkeep
-.tmp/
-*.tmp
+.env
 .vscode/
 .idea/
-*.swp
-.DS_Store
 
-# Логи
+# Логи парсера (текстовые) — игнорируем
 logs/*.log
-!logs/.gitkeep
 
-# Кэш
-__pycache__/
-*.pyc
-.env
+# .gitkeep — нужен, чтобы папки коммитились
+!logs/.gitkeep
+!logs/excel/.gitkeep
+!logs/html/.gitkeep

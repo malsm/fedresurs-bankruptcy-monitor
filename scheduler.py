@@ -1,6 +1,7 @@
 """
 scheduler.py — точка входа для локального запуска
 Запускается на вашем ПК, отправляет отчёты в GitHub
+Совместим с parser.py (параметры: client_file, headless, delay)
 """
 import asyncio
 import logging
@@ -28,39 +29,35 @@ def push_to_github():
             timestamp = datetime.now(MOSCOW_TZ).strftime('%Y-%m-%d %H:%M MSK')
             subprocess.run(['git', 'config', 'user.email', 'action@github.com'], check=True, capture_output=True)
             subprocess.run(['git', 'config', 'user.name', 'GitHub Action'], check=True, capture_output=True)
-            subprocess.run(['git', 'commit', '-m', f' Отчёт {timestamp}'], check=True, capture_output=True)
+            subprocess.run(['git', 'commit', '-m', f'Отчёт {timestamp}'], check=True, capture_output=True)
             subprocess.run(['git', 'push'], check=True, capture_output=True)
-            logger.info(" Файлы отправлены в GitHub")
+            logger.info("Файлы отправлены в GitHub")
         else:
-            logger.info(" Нет новых изменений")
+            logger.info("Нет новых изменений")
     except Exception as e:
-        logger.error(f" Ошибка push: {e}")
+        logger.error(f"Ошибка push: {e}")
 
 
 async def run_daily_parsing():
-    logger.info(f" Запуск парсинга {datetime.now(MOSCOW_TZ)}")
+    logger.info(f"Запуск парсинга {datetime.now(MOSCOW_TZ)}")
     
     try:
         checker = FedresursBankruptcyChecker(
             client_file="Клиенты_страхование_ТЕСТ.xlsx",
             headless=False,
-            delay=3,
-            batch_size=2,
-            batch_delay=90,
-            max_retries=3
+            delay=3
         )
         
-        df, excel_path, html_path = await checker.run_with_batches()
+        df, html_path = await checker.run()
         
-        logger.info(f" Парсинг завершён: {len(df)} компаний")
+        logger.info(f"Парсинг завершён: {len(df)} компаний")
         
-        #  Ключевой шаг: отправляем отчёты в GitHub
         push_to_github()
         
         return True
         
     except Exception as e:
-        logger.error(f" Ошибка: {e}", exc_info=True)
+        logger.error(f"Ошибка: {e}", exc_info=True)
         return False
 
 

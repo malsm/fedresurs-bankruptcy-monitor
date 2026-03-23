@@ -1,49 +1,34 @@
 """
-Парсер Федресурса — чистая версия для локального запуска
-Без playwright_stealth и других сложных зависимостей
+Парсер Федресурса — рабочая версия с сохранением в logs/
 """
 import asyncio
 from playwright.async_api import async_playwright
 import pandas as pd
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 import nest_asyncio
 import os
 import re
-import random
-from typing import List, Dict, Tuple, Optional
-import logging
+from tqdm import tqdm
+from typing import List, Dict, Tuple
 
 nest_asyncio.apply()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger(__name__)
-
 
 class FedresursBankruptcyChecker:
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    ]
-
-    def __init__(self, client_file: str, headless: bool = False, 
-                 delay: int = 3, batch_size: int = 1, batch_delay: int = 30,
-                 max_retries: int = 3):
+    def __init__(self, client_file: str, headless: bool = False, delay: int = 3):
         self.client_file = client_file
         self.headless = headless
         self.delay = delay
-        self.batch_size = batch_size
-        self.batch_delay = batch_delay
-        self.max_retries = max_retries
-        self.moscow_tz = timezone(timedelta(hours=3))
-        self.today = datetime.now(self.moscow_tz).strftime('%Y-%m-%d')
+        self.today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Сохраняем в папки logs/ для гибридной модели
         self.output_file = f"logs/excel/fedresurs_{self.today}.xlsx"
         self.html_file = f"logs/html/fedresurs_{self.today}.html"
         self.results = []
+
+        # Создаём папки
+        os.makedirs("logs/excel", exist_ok=True)
+        os.makedirs("logs/html", exist_ok=True)
 
         self.key_phrases = [
             "Намерение должника обратиться в суд с заявлением о банкротстве",
@@ -57,6 +42,7 @@ class FedresursBankruptcyChecker:
             "Сообщение о результатах проведения собрания кредиторов",
             "Сообщение о собрании кредиторов"
         ]
+
         self.intent_phrases = ["намерени", "исключение"]
 
         self.config = {
@@ -95,7 +81,8 @@ class FedresursBankruptcyChecker:
         return result
 
     def _is_intent(self, title: str) -> bool:
-        return any(p in title.lower() for p in self.intent_phrases)
+        title_lower = title.lower()
+        return any(phrase in title_lower for phrase in self.intent_phrases)
 
     def _extract_company_status(self, html: str) -> str:
         status_match = re.search(r'info-item-name[^>]*>Статус<[^>]*>\s*<[^>]*>\s*<[^>]*>\s*([^<]+)', html, re.I)
@@ -128,7 +115,9 @@ class FedresursBankruptcyChecker:
                 section_html = html[pos:end_pos]
                 section_clean = self._clean_html(section_html)
 
-                if 'нет данных' in section_clean.lower() and not has_data:
+                if 'нет данных' in section_clean.lower():
+                    if has_data:
+                        break
                     return "Нет данных", False, []
 
                 case_match = re.search(self.config['patterns']['case_number'], section_html)
@@ -137,8 +126,13 @@ class FedresursBankruptcyChecker:
                     has_data = True
 
                 if not status:
-                    for pattern in [r'конкурсное\s+производство', r'введено\s+наблюдение', 
-                                    r'внешнее\s+управление', r'финансовое\s+оздоровление']:
+                    status_patterns = [
+                        r'конкурсное\s+производство',
+                        r'введено\s+наблюдение',
+                        r'внешнее\s+управление',
+                        r'финансовое\s+оздоровление'
+                    ]
+                    for pattern in status_patterns:
                         if re.search(pattern, section_html, re.I):
                             status_match = re.search(
                                 r'([^<>\n]{0,100}(?:конкурсное производство|наблюдение|внешнее управление|финансовое оздоровление)[^<>\n]{0,100})',
@@ -150,14 +144,19 @@ class FedresursBankruptcyChecker:
 
                 for match in re.finditer(self.config['patterns']['message'], section_html):
                     msg_num, msg_date = match.groups()
-                    context = section_html[max(0, match.start()-300):min(len(section_html), match.end()+300)]
+                    start_pos = match.start()
+                    context_start = max(0, start_pos - 300)
+                    context_end = min(len(section_html), match.end() + 300)
+                    context = section_html[context_start:context_end]
                     context_clean = self._clean_html(context)
 
                     msg_type = ""
                     for phrase in self.key_phrases:
                         if phrase.lower() in context_clean.lower():
                             msg_type = phrase
+                            has_data = True
                             break
+
                     if msg_type:
                         messages.append({
                             'number': msg_num,
@@ -165,75 +164,167 @@ class FedresursBankruptcyChecker:
                             'title': msg_type,
                             'is_intent': self._is_intent(msg_type)
                         })
-                        has_data = True
+
                 break
 
         if not has_data and not messages:
             return "Нет данных", False, []
 
-        formatted_parts = ["Сведения о банкротстве:"]
-        group1 = []
+        formatted_parts = []
+        formatted_parts.append("Сведения о банкротстве:")
+
+        group1_parts = []
         if case_number:
-            group1.append(case_number)
+            group1_parts.append(case_number)
         if status:
-            group1.append(status)
+            group1_parts.append(status)
         for msg in messages:
             if not msg['is_intent']:
-                group1.append(f"{msg['number']} от {msg['date']} {msg['title']}")
-        if group1:
-            formatted_parts.append(f"1) {' '.join(group1)}")
+                group1_parts.append(f"{msg['number']} от {msg['date']} {msg['title']}")
+        if group1_parts:
+            formatted_parts.append(f"1) {' '.join(group1_parts)}")
 
-        intents = [m for m in messages if m['is_intent']]
-        if intents:
-            group2 = ["Сообщения о намерении"]
-            for msg in intents:
-                group2.append(f"{msg['number']} от {msg['date']} {msg['title']}")
-            formatted_parts.append(f"2) {' '.join(group2)}")
+        intent_messages = [m for m in messages if m['is_intent']]
+        if intent_messages:
+            group2_parts = ["Сообщения о намерении"]
+            for msg in intent_messages:
+                group2_parts.append(f"{msg['number']} от {msg['date']} {msg['title']}")
+            formatted_parts.append(f"2) {' '.join(group2_parts)}")
 
         return '\n'.join(formatted_parts), True, messages
 
-    async def find_company_id(self, inn: str) -> Optional[str]:
-        url = f"https://fedresurs.ru/entities?searchString={inn.strip()}"
-        
-        for attempt in range(self.max_retries + 1):
+    async def _load_all_publications(self, page) -> None:
+        max_attempts = 50
+        attempts = 0
+        while attempts < max_attempts:
             try:
-                async with async_playwright() as p:
-                    browser_args = ['--no-sandbox', '--disable-setuid-sandbox']
-                    browser = await p.chromium.launch(headless=self.headless, args=browser_args)
-                    
-                    ua = random.choice(self.USER_AGENTS)
-                    context = await browser.new_context(
-                        user_agent=ua,
-                        viewport={'width': 1920, 'height': 1080},
-                        locale='ru-RU',
-                        timezone_id='Europe/Moscow'
-                    )
-                    page = await context.new_page()
-                    
-                    await asyncio.sleep(random.uniform(2, 5))
-                    
-                    await page.goto(url, wait_until='domcontentloaded', timeout=90000)
-                    await asyncio.sleep(random.uniform(1, 3))
-                    
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
-                    
-                    html = await page.content()
-                    await browser.close()
-                    
-                    for pattern in self.config['search']['id_patterns']:
-                        match = re.search(pattern, html)
-                        if match:
-                            return match.group(1)
-                        
-            except Exception as e:
-                wait = min(60, (attempt + 1) * 15 + random.uniform(5, 10))
-                logger.warning(f"{inn}: Попытка {attempt+1}/{self.max_retries+1} не удалась, ждём {wait:.0f}с")
-                await asyncio.sleep(wait)
+                more_button = await page.wait_for_selector('div.more_btn:has-text("Загрузить еще")', timeout=3000)
+                if more_button and await more_button.is_visible():
+                    await more_button.click()
+                    await asyncio.sleep(2)
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    attempts += 1
+                else:
+                    break
+            except:
+                break
+
+    async def _extract_publications_from_page(self, publications_url: str, browser) -> List[Dict]:
+        publications = []
+        page = await browser.new_page()
+        try:
+            await page.goto(publications_url, wait_until='networkidle')
+            await asyncio.sleep(2)
+            await self._load_all_publications(page)
+
+            cards = await page.query_selector_all('entity-card-publications-search-result-card')
+            for card in cards:
+                title_element = await card.query_selector('.fw-light')
+                if not title_element:
+                    continue
+                title = await title_element.inner_text()
+                title = title.strip()
+
+                matched_phrase = None
+                for phrase in self.key_phrases:
+                    if phrase.lower() in title.lower():
+                        matched_phrase = phrase
+                        break
+
+                if matched_phrase:
+                    link_element = await card.query_selector('a.underlined')
+                    if not link_element:
+                        continue
+                    link_text = await link_element.inner_text()
+                    link_text = link_text.strip()
+
+                    msg_info = self._extract_message_info(link_text)
+                    if msg_info['number'] and msg_info['date']:
+                        publications.append({
+                            'number': msg_info['number'],
+                            'date': msg_info['date'],
+                            'title': matched_phrase,
+                            'is_intent': self._is_intent(matched_phrase)
+                        })
+
+            def extract_date(pub: Dict) -> datetime:
+                return datetime.strptime(pub['date'], '%d.%m.%Y')
+
+            publications.sort(key=extract_date, reverse=True)
+        finally:
+            await page.close()
+
+        return publications
+
+    async def _extract_trades_data(self, main_url: str, browser) -> List[Dict]:
+        trades = []
+        page = await browser.new_page()
+        try:
+            await page.goto(main_url, wait_until='networkidle')
+            await asyncio.sleep(2)
+            
+            trades_header = await page.query_selector('div.info-header:has-text("Торги")')
+            if not trades_header:
+                return trades
+            
+            sales_header = await page.query_selector('div.type-header:has-text("Продажа имущества при банкротстве")')
+            if not sales_header:
+                return trades
+            
+            no_data = await page.query_selector('div:has-text("Нет данных")')
+            if no_data:
+                return trades
+            
+            cards = await page.query_selector_all('entity-card-biddings-block-bidding-card')
+            for card in cards:
+                trade = {}
+                
+                number_link = await card.query_selector('a.number-link')
+                if number_link:
+                    trade['number'] = await number_link.inner_text()
+                
+                date_div = await card.query_selector('div:has-text("Дата торгов")')
+                if date_div:
+                    date_parent = await date_div.query_selector('xpath=..')
+                    if date_parent:
+                        date_spans = await date_parent.query_selector_all('span')
+                        if len(date_spans) >= 3:
+                            trade['start_date'] = await date_spans[0].inner_text()
+                            trade['end_date'] = await date_spans[2].inner_text()
+                
+                operator_link = await card.query_selector('a[href*="/companies/"]')
+                if operator_link:
+                    trade['organizer'] = await operator_link.inner_text()
+                
+                if trade:
+                    trades.append(trade)
+        except Exception as e:
+            print(f"Ошибка при парсинге торгов: {e}")
+        finally:
+            await page.close()
+        
+        return trades
+
+    async def find_company_id(self, inn: str) -> str:
+        url = f"https://fedresurs.ru/entities?searchString={inn}"
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=self.headless)
+                page = await browser.new_page()
+                await page.goto(url, wait_until='networkidle', timeout=60000)
+                await asyncio.sleep(2)
+                html = await page.content()
+                await browser.close()
+
+                for pattern in self.config['search']['id_patterns']:
+                    match = re.search(pattern, html)
+                    if match:
+                        return match.group(1)
+        except:
+            pass
         return None
 
     async def check_bankruptcy(self, inn: str) -> Tuple[str, str]:
-        """Проверка компании — упрощённая версия"""
         try:
             company_id = await self.find_company_id(inn)
             if not company_id:
@@ -244,213 +335,347 @@ class FedresursBankruptcyChecker:
 
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=self.headless)
-                
+
                 page = await browser.new_page()
                 await page.goto(main_url, wait_until='networkidle', timeout=60000)
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(2)
                 main_html = await page.content()
-                
-                bankruptcy_status, has_data, _ = self._extract_bankruptcy_data(main_html)
-                
-                publications = []
-                if has_data:
-                    pub_page = await browser.new_page()
-                    await pub_page.goto(publications_url, wait_until='networkidle', timeout=60000)
-                    await asyncio.sleep(2)
-                    pub_cards = await pub_page.query_selector_all('entity-card-publications-search-result-card')
-                    for card in pub_cards:
-                        title_el = await card.query_selector('.fw-light')
-                        if title_el:
-                            title = (await title_el.inner_text()).strip()
-                            for phrase in self.key_phrases:
-                                if phrase.lower() in title.lower():
-                                    link_el = await card.query_selector('a.underlined')
-                                    if link_el:
-                                        link_text = (await link_el.inner_text()).strip()
-                                        info = self._extract_message_info(link_text)
-                                        if info['number'] and info['date']:
-                                            publications.append(f"- {info['number']} от {info['date']} {phrase}")
-                                    break
-                    await pub_page.close()
-                
+                await page.close()
+
+                if not main_html:
+                    await browser.close()
+                    return "Ошибка загрузки страницы", ""
+
+                bankruptcy_status, has_data, bankruptcy_messages = self._extract_bankruptcy_data(main_html)
+                trades_data = await self._extract_trades_data(main_url, browser)
+                publications = await self._extract_publications_from_page(publications_url, browser)
                 await browser.close()
 
-            pub_text = "\n".join(publications) if publications else ""
-            return bankruptcy_status if has_data else "Нет данных", pub_text
+                pub_lines = []
+                for pub in publications:
+                    pub_lines.append(f"- {pub['number']} от {pub['date']} {pub['title']}")
+                
+                trades_lines = []
+                for trade in trades_data:
+                    trade_line = f"- {trade.get('number', '')}"
+                    if 'start_date' in trade and 'end_date' in trade:
+                        trade_line += f" Дата торгов {trade['start_date']} — {trade['end_date']}"
+                    if 'organizer' in trade:
+                        trade_line += f" {trade['organizer']}"
+                    trades_lines.append(trade_line)
+
+                if (publications or trades_data) and not has_data:
+                    status_parts = ["Сведения о банкротстве:"]
+                    
+                    if trades_data:
+                        status_parts.append("Торги\nПродажа имущества при банкротстве")
+                        status_parts.extend(trades_lines)
+                    
+                    if publications:
+                        status_parts.append("Публикации:")
+                        status_parts.extend(pub_lines)
+                    
+                    final_status = "\n".join(status_parts)
+                    return final_status, ""
+
+                if not has_data and not publications and not trades_data:
+                    return "Нет данных", ""
+
+                status_parts = []
+                
+                if has_data:
+                    status_parts.append(bankruptcy_status)
+                
+                if trades_data:
+                    if status_parts:
+                        status_parts.append("\nТорги\nПродажа имущества при банкротстве")
+                    else:
+                        status_parts.append("Сведения о банкротстве:\nТорги\nПродажа имущества при банкротстве")
+                    status_parts.extend(trades_lines)
+
+                final_status = "\n".join(status_parts) if status_parts else "Нет данных"
+                publications_text = "\n".join(pub_lines) if pub_lines else ""
+
+                return final_status, publications_text
 
         except Exception as e:
             return f"Ошибка: {str(e)[:100]}", ""
 
-    async def _extract_publications_from_page(self, url, browser) -> List[Dict]:
-        publications = []
-        page = await browser.new_page()
-        try:
-            await page.goto(url, wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(2)
-            cards = await page.query_selector_all('entity-card-publications-search-result-card')
-            for card in cards:
-                title_el = await card.query_selector('.fw-light')
-                if not title_el:
-                    continue
-                title = (await title_el.inner_text()).strip()
-                matched = None
-                for p in self.key_phrases:
-                    if p.lower() in title.lower():
-                        matched = p
-                        break
-                if matched:
-                    link_el = await card.query_selector('a.underlined')
-                    if not link_el:
-                        continue
-                    info = self._extract_message_info((await link_el.inner_text()).strip())
-                    if info['number'] and info['date']:
-                        publications.append({
-                            'number': info['number'],
-                            'date': info['date'],
-                            'title': matched,
-                            'is_intent': self._is_intent(matched)
-                        })
-            publications.sort(key=lambda x: datetime.strptime(x['date'], '%d.%m.%Y'), reverse=True)
-        except Exception as e:
-            logger.warning(f"Ошибка публикаций: {e}")
-        finally:
-            await page.close()
-        return publications
-
-    async def _extract_trades_data(self, url, browser) -> List[Dict]:
-        trades = []
-        page = await browser.new_page()
-        try:
-            await page.goto(url, wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(2)
-            if not await page.query_selector('div.info-header:has-text("Торги")'):
-                return trades
-            cards = await page.query_selector_all('entity-card-biddings-block-bidding-card')
-            for card in cards:
-                trade = {}
-                num_link = await card.query_selector('a.number-link')
-                if num_link:
-                    trade['number'] = await num_link.inner_text()
-                date_div = await card.query_selector('div:has-text("Дата торгов")')
-                if date_div:
-                    parent = await date_div.query_selector('xpath=..')
-                    if parent:
-                        spans = await parent.query_selector_all('span')
-                        if len(spans) >= 3:
-                            trade['start_date'] = await spans[0].inner_text()
-                            trade['end_date'] = await spans[2].inner_text()
-                org_link = await card.query_selector('a[href*="/companies/"]')
-                if org_link:
-                    trade['organizer'] = await org_link.inner_text()
-                if trade:
-                    trades.append(trade)
-        except Exception as e:
-            logger.warning(f"Ошибка торгов: {e}")
-        finally:
-            await page.close()
-        return trades
-
     def read_companies(self) -> pd.DataFrame:
         df = pd.read_excel(self.client_file, header=5)
-        name_col = inn_col = None
+        name_col, inn_col = None, None
         for col in df.columns:
-            if 'ИНН' in str(col):
+            col_str = str(col)
+            if 'ИНН' in col_str:
                 inn_col = col
-            if 'Наименование' in str(col):
+            if 'Наименование' in col_str:
                 name_col = col
         if not name_col or not inn_col:
-            raise ValueError("Не найдены колонки: ИНН, Наименование")
+            raise ValueError("Не найдены нужные колонки")
         companies = df[[name_col, inn_col]].copy()
         companies.columns = ['name', 'inn']
         companies = companies.dropna()
         
-        def clean_inn(v):
-            if pd.isna(v):
+        def clean_inn(value):
+            if pd.isna(value):
                 return ""
             try:
-                return str(int(float(v)))
-            except:
-                return str(v).strip().rstrip('.0')
+                return str(int(float(value)))
+            except (ValueError, TypeError):
+                return str(value).strip().rstrip('.0')
         
         companies['inn'] = companies['inn'].apply(clean_inn)
         companies['name'] = companies['name'].astype(str).str.strip()
         return companies
 
+    def format_bankruptcy_status(self, status_text: str) -> str:
+        if not status_text or status_text in ["Компания не найдена", "Ошибка загрузки страницы"]:
+            return status_text
+        if status_text.startswith("Ошибка:"):
+            return status_text
+        if status_text == "Нет данных":
+            return ""
+        status_text = status_text.replace('<', '&lt;').replace('>', '&gt;')
+        status_text = status_text.replace('\n', '<br>')
+        return f'<div class="formatted-status">{status_text}</div>'
+
     def generate_html_table(self, df: pd.DataFrame) -> str:
         total = len(df)
-        stats = {
-            "no_data": sum(s in ["Нет данных", "Компания не найдена"] for s in df['Банкротство']),
-            "has_signs": sum(s not in ["Нет данных", "Компания не найдена"] and not s.startswith("Ошибка") for s in df['Банкротство']),
-            "errors": sum(s.startswith("Ошибка") for s in df['Банкротство'])
-        }
-        moscow_now = datetime.now(self.moscow_tz).strftime('%d.%m.%Y %H:%M MSK')
-        
-        html = f"""<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Проверка банкротства</title><style>
-body{{font-family:sans-serif;background:#f5f7fa;padding:20px}}
-.container{{max-width:1200px;margin:0 auto;background:white;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}}
-.header{{background:#3498db;color:white;padding:20px;text-align:center;border-radius:10px 10px 0 0}}
-table{{width:100%;border-collapse:collapse}}
-th{{background:#2c3e50;color:white;padding:12px;text-align:left}}
-td{{padding:12px;border-bottom:1px solid #eee}}
-tr:hover{{background:#f8f9fa}}
-.badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px}}
-.badge-ok{{background:#e8f8f0;color:#27ae60}}
-.badge-warn{{background:#fef5e7;color:#e67e22}}
-.badge-err{{background:#f9ebea;color:#c0392b}}
-</style></head><body>
-<div class="container"><div class="header"><h1>Проверка банкротства</h1><p>{moscow_now}</p></div>
-<table><thead><tr><th>№</th><th>ИНН</th><th>Наименование</th><th>Статус</th><th>Публикации</th></tr></thead><tbody>"""
-        
-        for idx, row in df.iterrows():
-            status, pubs = row['Банкротство'], row.get('Публикации', '')
-            if status in ["Нет данных", "Компания не найдена"]:
-                badge, display = "badge-ok", "Нет данных"
+        no_bankruptcy = 0
+        has_bankruptcy = 0
+        errors = 0
+        for status in df['Банкротство']:
+            if status == "Нет данных" or status == "Компания не найдена":
+                no_bankruptcy += 1
             elif status.startswith("Ошибка"):
-                badge, display = "badge-err", "Ошибка"
+                errors += 1
+            elif status != "Нет данных":
+                has_bankruptcy += 1
             else:
-                badge, display = "badge-warn", "Есть признаки"
-            status_html = status.replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>') if status != display else ""
-            html += f"""<tr><td>{idx+1}</td><td>{row['ИНН']}</td><td><strong>{row['Наименование']}</strong></td>
-<td><span class="badge {badge}">{display}</span>{status_html}</td><td>{pubs.replace(chr(10), '<br>') if pubs else ''}</td></tr>"""
-        
-        html += f"""</tbody></table><div style="padding:20px;text-align:center;color:#666">
-Всего: {total} | Нет данных: {stats['no_data']} | Есть признаки: {stats['has_signs']} | Ошибки: {stats['errors']}
-</div></div></body></html>"""
+                no_bankruptcy += 1
+
+        html = f"""
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Результаты проверки банкротства</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap');
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{
+font-family: 'Roboto', sans-serif;
+background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+min-height: 100vh;
+padding: 40px 20px;
+}}
+.container {{
+max-width: 1400px;
+margin: 0 auto;
+background: white;
+border-radius: 20px;
+box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+overflow: hidden;
+}}
+.header {{
+background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+color: white;
+padding: 30px;
+text-align: center;
+}}
+.header h1 {{ font-size: 32px; font-weight: 500; margin-bottom: 10px; }}
+.header p {{ font-size: 16px; opacity: 0.9; }}
+.date-badge {{
+display: inline-block;
+background: rgba(255,255,255,0.2);
+padding: 8px 20px;
+border-radius: 50px;
+margin-top: 15px;
+font-size: 14px;
+}}
+.table-wrapper {{ padding: 30px; overflow-x: auto; }}
+table {{
+width: 100%;
+border-collapse: collapse;
+border-radius: 15px;
+overflow: hidden;
+box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+}}
+thead {{ background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%); color: white; }}
+th {{ padding: 18px 15px; font-weight: 500; font-size: 16px; text-transform: uppercase; }}
+tbody tr:nth-child(even) {{ background-color: #f8f9ff; }}
+tbody tr:hover {{ background-color: #e8f4ff; }}
+td {{ padding: 18px 15px; border-bottom: 1px solid #e0e0e0; color: #333; font-size: 14px; vertical-align: top; }}
+.inn-cell {{ font-family: 'Courier New', monospace; font-weight: 500; color: #3498db; }}
+.name-cell {{ font-weight: 500; color: #2c3e50; }}
+.publications-cell {{
+max-width: 400px;
+white-space: pre-line;
+line-height: 1.4;
+font-size: 12px;
+}}
+.formatted-status {{
+line-height: 1.6;
+white-space: pre-line;
+font-family: 'Courier New', monospace;
+font-size: 12px;
+}}
+.status-badge {{
+display: inline-block;
+padding: 4px 12px;
+border-radius: 50px;
+font-size: 12px;
+font-weight: 500;
+margin-bottom: 8px;
+}}
+.badge-success {{ background: #e8f8f0; color: #27ae60; }}
+.badge-warning {{ background: #fef5e7; color: #e67e22; }}
+.badge-error {{ background: #f9ebea; color: #c0392b; }}
+.stats {{
+display: flex;
+justify-content: space-around;
+margin: 20px;
+padding: 20px;
+background: #f8f9ff;
+border-radius: 15px;
+}}
+.stat-item {{ text-align: center; }}
+.stat-value {{ font-size: 24px; font-weight: 700; color: #3498db; }}
+.stat-label {{ font-size: 14px; color: #666; margin-top: 5px; }}
+.footer {{ background: #f9f9f9; padding: 20px; text-align: center; border-top: 1px solid #e0e0e0; }}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<h1>Проверка статуса банкротства</h1>
+<p>Федресурс</p>
+<div class="date-badge">{datetime.now().strftime('%d.%m.%Y %H:%M')}</div>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr>
+<th>№</th>
+<th>ИНН</th>
+<th>Наименование</th>
+<th>Статус банкротства</th>
+<th>Публикации</th>
+</tr>
+</thead>
+<tbody>
+"""
+        for idx, row in df.iterrows():
+            status = row['Банкротство']
+            publications = row['Публикации'] if 'Публикации' in row else ""
+
+            if status == "Нет данных" or status == "Компания не найдена":
+                badge_class = "badge-success"
+                badge_text = "Нет данных"
+                display_status = ""
+            elif status.startswith("Ошибка"):
+                badge_class = "badge-error"
+                badge_text = "Ошибка"
+                display_status = status
+            else:
+                badge_class = "badge-warning"
+                badge_text = "Есть признаки"
+                display_status = status
+
+            formatted_status = self.format_bankruptcy_status(display_status)
+            formatted_publications = publications.replace('\n', '<br>') if publications else ""
+
+            html += f"""
+<tr>
+<td>{idx + 1}</td>
+<td class="inn-cell">{row['ИНН']}</td>
+<td class="name-cell"><strong>{row['Наименование']}</strong></td>
+<td>
+<span class="status-badge {badge_class}">{badge_text}</span>
+{formatted_status}
+</td>
+<td class="publications-cell">{formatted_publications}</td>
+</tr>
+"""
+
+        html += f"""
+</tbody>
+</table>
+</div>
+<div class="stats">
+<div class="stat-item">
+<div class="stat-value">{total}</div>
+<div class="stat-label">Всего</div>
+</div>
+<div class="stat-item">
+<div class="stat-value" style="color: #27ae60;">{no_bankruptcy}</div>
+<div class="stat-label">Нет данных</div>
+</div>
+<div class="stat-item">
+<div class="stat-value" style="color: #e67e22;">{has_bankruptcy}</div>
+<div class="stat-label">Есть признаки</div>
+</div>
+<div class="stat-item">
+<div class="stat-value" style="color: #c0392b;">{errors}</div>
+<div class="stat-label">Ошибки</div>
+</div>
+</div>
+<div class="footer">
+<p>© {datetime.now().year} • Отчет сгенерирован автоматически</p>
+</div>
+</div>
+</body>
+</html>
+"""
         return html
 
-    async def run_with_batches(self) -> Tuple[pd.DataFrame, str, str]:
-        logger.info("Запуск парсинга")
+    async def run(self):
+        print("\n" + "=" * 100)
+        print("ПРОВЕРКА СТАТУСА БАНКРОТСТВА".center(100))
+        print("=" * 100 + "\n")
         companies = self.read_companies()
-        logger.info(f"Загружено компаний: {len(companies)}")
-        
-        for i in range(0, len(companies), self.batch_size):
-            batch = companies.iloc[i:i+self.batch_size]
-            logger.info(f"Пакет {i//self.batch_size + 1}: компании {i+1}-{min(i+self.batch_size, len(companies))}")
-            
-            for _, row in batch.iterrows():
-                logger.info(f"Проверка: {row['inn']} - {row['name']}")
-                status, pubs = await self.check_bankruptcy(row['inn'])
-                self.results.append({
-                    'ИНН': row['inn'],
-                    'Наименование': row['name'],
-                    'Банкротство': status,
-                    'Публикации': pubs,
-                    'timestamp': datetime.now(self.moscow_tz).isoformat()
-                })
-                await asyncio.sleep(self.delay)
-            
-            if i + self.batch_size < len(companies):
-                logger.info(f"Пауза {self.batch_delay} сек...")
-                await asyncio.sleep(self.batch_delay)
-        
+        print(f" Загружено компаний: {len(companies)}")
+        print(f" Компании для проверки:")
+        for _, row in companies.iterrows():
+            print(f"   - {row['inn']} - {row['name']}")
+        print()
+        for _, row in tqdm(companies.iterrows(), total=len(companies), desc="Проверка"):
+            status, publications = await self.check_bankruptcy(row['inn'])
+            self.results.append({
+                'ИНН': row['inn'],
+                'Наименование': row['name'],
+                'Банкротство': status,
+                'Публикации': publications
+            })
+            await asyncio.sleep(self.delay)
         df = pd.DataFrame(self.results)
-        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
-        os.makedirs(os.path.dirname(self.html_file), exist_ok=True)
         df.to_excel(self.output_file, index=False)
         with open(self.html_file, 'w', encoding='utf-8') as f:
             f.write(self.generate_html_table(df))
-        
-        logger.info(f"Готово! Excel: {self.output_file}, HTML: {self.html_file}")
-        return df, self.output_file, self.html_file
+        return df, self.html_file
+
+
+async def main():
+    checker = FedresursBankruptcyChecker(
+        client_file="Клиенты_страхование_ТЕСТ.xlsx",
+        headless=False,
+        delay=3
+    )
+    results, html_file = await checker.run()
+    print("\n" + "=" * 120)
+    print("РЕЗУЛЬТАТЫ".center(120))
+    print("=" * 120)
+    print(results.to_string(index=False))
+    print("\n" + "=" * 120)
+    print(f" Excel файл: {checker.output_file}".center(120))
+    print(f" HTML отчет: {html_file}".center(120))
+    print("=" * 120)
+    import webbrowser
+    webbrowser.open(f"file://{os.path.abspath(html_file)}")
+
+
+if __name__ == "__main__":
+    import webbrowser
+    asyncio.run(main())
