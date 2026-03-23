@@ -1,5 +1,5 @@
 """
-Настройки проекта
+config.py — настройки проекта
 """
 from datetime import timezone, timedelta
 import os
@@ -14,22 +14,17 @@ EXCEL_DIR = os.path.join(LOGS_DIR, "excel")
 HTML_DIR = os.path.join(LOGS_DIR, "html")
 DB_PATH = os.path.join(LOGS_DIR, "database.db")
 
-# Создаем папки
+# Создаём папки
 for d in [LOGS_DIR, EXCEL_DIR, HTML_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# Настройки парсинга
-PARSER_CONFIG = {
-    "client_file": "Клиенты_страхование_ТЕСТ.xlsx",
-    "headless": True,
-    "delay": 8,              # Было 3 → стало 8 (между компаниями)
-    "batch_size": 3,         # Было 5 → стало 3 (меньше компаний в пакете)
-    "batch_delay": 60,       # Было 30 → стало 60 (пауза между пакетами)
-}
+# GitHub репозиторий
+REPO_URL = "https://github.com/malsm/fedresurs-bankruptcy-monitor"
 
-# Настройки дашборда
-DASHBOARD_CONFIG = {
-    "title": " Мониторинг банкротств (Федресурс)",
-    "timezone": "Europe/Moscow",
-    "max_history_days": 90,
+# Расписание: ПН(0), СР(2), ПТ(4) до 18:00
+SCHEDULER_CONFIG = {
+    "allowed_days": [0, 2, 4],      # ПН, СР, ПТ
+    "max_hour": 18,                  # До 18:00
+    "require_user_active": True,     # Только если ПК активен
+    "idle_timeout_minutes": 30,      # Простой более 30 мин = неактивен
 }

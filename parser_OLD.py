@@ -656,15 +656,6 @@ border-radius: 15px;
             f.write(self.generate_html_table(df))
         return df, self.html_file
 
-    async def run_with_batches(self) -> Tuple[pd.DataFrame, str, str]:
-        """
-        Запуск парсинга с сохранением в logs/
-        Возвращает: (DataFrame, путь к Excel, путь к HTML)
-        Это обёртка над run() для совместимости с scheduler.py
-        """
-        df, html_path = await self.run()
-        return df, self.output_file, html_path
-
 
 async def main():
     checker = FedresursBankruptcyChecker(
