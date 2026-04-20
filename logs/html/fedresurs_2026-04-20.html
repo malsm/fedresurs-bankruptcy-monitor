@@ -1,0 +1,194 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Результаты проверки банкротства</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap');
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+font-family: 'Roboto', sans-serif;
+background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+min-height: 100vh;
+padding: 40px 20px;
+}
+.container {
+max-width: 1400px;
+margin: 0 auto;
+background: white;
+border-radius: 20px;
+box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+overflow: hidden;
+}
+.header {
+background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+color: white;
+padding: 30px;
+text-align: center;
+}
+.header h1 { font-size: 32px; font-weight: 500; margin-bottom: 10px; }
+.header p { font-size: 16px; opacity: 0.9; }
+.date-badge {
+display: inline-block;
+background: rgba(255,255,255,0.2);
+padding: 8px 20px;
+border-radius: 50px;
+margin-top: 15px;
+font-size: 14px;
+}
+.table-wrapper { padding: 30px; overflow-x: auto; }
+table {
+width: 100%;
+border-collapse: collapse;
+border-radius: 15px;
+overflow: hidden;
+box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+}
+thead { background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%); color: white; }
+th { padding: 18px 15px; font-weight: 500; font-size: 16px; text-transform: uppercase; }
+tbody tr:nth-child(even) { background-color: #f8f9ff; }
+tbody tr:hover { background-color: #e8f4ff; }
+td { padding: 18px 15px; border-bottom: 1px solid #e0e0e0; color: #333; font-size: 14px; vertical-align: top; }
+.inn-cell { font-family: 'Courier New', monospace; font-weight: 500; color: #3498db; }
+.name-cell { font-weight: 500; color: #2c3e50; }
+.publications-cell {
+max-width: 400px;
+white-space: pre-line;
+line-height: 1.4;
+font-size: 12px;
+}
+.formatted-status {
+line-height: 1.6;
+white-space: pre-line;
+font-family: 'Courier New', monospace;
+font-size: 12px;
+}
+.status-badge {
+display: inline-block;
+padding: 4px 12px;
+border-radius: 50px;
+font-size: 12px;
+font-weight: 500;
+margin-bottom: 8px;
+}
+.badge-success { background: #e8f8f0; color: #27ae60; }
+.badge-warning { background: #fef5e7; color: #e67e22; }
+.badge-error { background: #f9ebea; color: #c0392b; }
+.stats {
+display: flex;
+justify-content: space-around;
+margin: 20px;
+padding: 20px;
+background: #f8f9ff;
+border-radius: 15px;
+}
+.stat-item { text-align: center; }
+.stat-value { font-size: 24px; font-weight: 700; color: #3498db; }
+.stat-label { font-size: 14px; color: #666; margin-top: 5px; }
+.footer { background: #f9f9f9; padding: 20px; text-align: center; border-top: 1px solid #e0e0e0; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<h1>Проверка статуса банкротства</h1>
+<p>Федресурс</p>
+<div class="date-badge">20.04.2026 07:20</div>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr>
+<th>№</th>
+<th>ИНН</th>
+<th>Наименование</th>
+<th>Статус банкротства</th>
+<th>Публикации</th>
+</tr>
+</thead>
+<tbody>
+
+<tr>
+<td>1</td>
+<td class="inn-cell">5007098971</td>
+<td class="name-cell"><strong>ООО "Р-Ойл"</strong></td>
+<td>
+<span class="status-badge badge-success">Нет данных</span>
+
+</td>
+<td class="publications-cell"></td>
+</tr>
+
+<tr>
+<td>2</td>
+<td class="inn-cell">7743395390</td>
+<td class="name-cell"><strong>8 ЦЕНТР ФСИН РОССИИ</strong></td>
+<td>
+<span class="status-badge badge-success">Нет данных</span>
+
+</td>
+<td class="publications-cell"></td>
+</tr>
+
+<tr>
+<td>3</td>
+<td class="inn-cell">7811797975</td>
+<td class="name-cell"><strong>ООО "СТАР ИНТЕГРАЦИЯ"</strong></td>
+<td>
+<span class="status-badge badge-success">Нет данных</span>
+
+</td>
+<td class="publications-cell"></td>
+</tr>
+
+<tr>
+<td>4</td>
+<td class="inn-cell">7424024375</td>
+<td class="name-cell"><strong>ПАО "ЮГК"</strong></td>
+<td>
+<span class="status-badge badge-success">Нет данных</span>
+
+</td>
+<td class="publications-cell"></td>
+</tr>
+
+<tr>
+<td>5</td>
+<td class="inn-cell">7825367884</td>
+<td class="name-cell"><strong>АО "БЕАТОН"</strong></td>
+<td>
+<span class="status-badge badge-success">Нет данных</span>
+
+</td>
+<td class="publications-cell"></td>
+</tr>
+
+</tbody>
+</table>
+</div>
+<div class="stats">
+<div class="stat-item">
+<div class="stat-value">5</div>
+<div class="stat-label">Всего</div>
+</div>
+<div class="stat-item">
+<div class="stat-value" style="color: #27ae60;">5</div>
+<div class="stat-label">Нет данных</div>
+</div>
+<div class="stat-item">
+<div class="stat-value" style="color: #e67e22;">0</div>
+<div class="stat-label">Есть признаки</div>
+</div>
+<div class="stat-item">
+<div class="stat-value" style="color: #c0392b;">0</div>
+<div class="stat-label">Ошибки</div>
+</div>
+</div>
+<div class="footer">
+<p>© 2026 • Отчет сгенерирован автоматически</p>
+</div>
+</div>
+</body>
+</html>
